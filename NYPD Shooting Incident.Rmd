@@ -1,0 +1,112 @@
+---
+title: "NPYD Shooting Incident"
+author: "Shyam Menon"
+date: "5/10/2021"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(incidence)
+library(ggplot2)
+```
+
+## Dataset Maniupulation
+
+### Importing the Data - NYPD Shooting Incident Data (Historic)
+
+List of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year.
+
+This is a breakdown of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year. This data is manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and includes information about the event, the location and time of occurrence. In addition, information related to suspect and victim demographics is also included. :
+
+```{r get_nypd_data}
+nypd_data <- read.csv(url("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"))
+```
+
+### Cleaning and Transforming the Data
+
+Getting rid of unneeded columns such as X_COORD_CD, Y_COORD_CD, Latitude, Longitude, and Lon_Lat. Then cleaning up the date and time columns by combining them into a singular column; then changing the data to a date object.
+
+```{r clean_nypd_data}
+nypd <- subset(nypd_data, select = -c(X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_Lat))
+nypd <- mutate(nypd, OCCUR_DATE_TIME = str_c(OCCUR_DATE, OCCUR_TIME, sep=" "))
+nypd <- mutate(nypd, OCCUR_DATE_TIME = mdy_hms(OCCUR_DATE_TIME))
+nypd <- mutate(nypd, OCCUR_DATE = mdy(OCCUR_DATE))
+nypd <- mutate(nypd, OCCUR_TIME = hms(OCCUR_TIME))
+
+nypd <- nypd %>% 
+filter(VIC_AGE_GROUP != "UNKNOWN")
+summary(nypd)
+```
+
+## Data Analysis
+
+### Total Shootings by Borough
+
+Analysis to see the total instances of shootings in each of the Boroughs in NYC from 2006-2020.
+
+```{r total_shootings_borough}
+borough <- nypd %>%
+  group_by(BORO) %>%
+  count()
+
+p <- ggplot(borough, aes(x = BORO, weight = n)) +
+  geom_bar(width = 0.5, fill = "red") +
+  labs(x = "Borough", y = "Total Shootings", 
+  title = "Total Shootings by Borough (2006-2020)") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  geom_text(aes(x = BORO, y = n + 1, label = n))
+
+plot(p)
+```
+
+
+### Gender of Victims vs. Number of Shootings in Brooklyn, NYC 2020.
+
+Analysis to identify the genders of shooting victims in Brooklyn, NYC from 2020.
+F = Female
+M = Male
+
+```{r gender_brooklyn2020}
+brooklyn <- nypd %>%
+filter(BORO == "BROOKLYN") %>%
+filter(OCCUR_DATE_TIME > ymd_hms("2020-01-01 00:00:00"))
+
+
+sex_brooklyn <- brooklyn %>%
+filter(VIC_SEX != "U") %>% 
+group_by(VIC_SEX) %>%
+summarise(gender_count=n())
+
+sex_plot <- ggplot(sex_brooklyn, aes(x = VIC_SEX, weight = gender_count)) +
+ geom_bar(width = 0.5, fill = "green") +
+ labs(x = "Sex", y = "Number of Incidences", title = "Victim Gender from 2020 Shootings in Brooklyn") +
+ theme(plot.title = element_text(hjust = 0.5)) +
+ geom_text(aes(x = VIC_SEX, y = gender_count, label = gender_count))
+
+plot(sex_plot)
+```
+
+## Data Modeling
+
+### Modeling the Daily Incidence of shootings in NYC
+
+Incidence modeling of all the shootings in NYC from 2006 to 2020. A negative slope suggests an overall decline in shooting incidences in the city over time.
+
+```{r incidence_shootings, warning=FALSE}
+i <- incidence (nypd$OCCUR_DATE)
+i_fit <- fit(i)
+
+plot(i, fit = i_fit, color = "red")
+```
+
+## Conclusion
+
+The NYPD shooting data set was very interesting to analyze. The data on the victims of the shootings seem to be complete where as some of the data for the perpetrator was missing. This could lead the data to be bias because the lack of a complete picture. Personal bias could also be a factor if picking specific age groups, sex, or race; however, that was avoided by picking the whole data column and not excluding any data points. 
+
+While there have been many spikes of daily shooting incidences over time, the overall trend suggests that the daily incidence rates have fallen over time. Further analysis should be done at a later date in order to see if the current trend changes.
