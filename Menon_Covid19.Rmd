@@ -1,0 +1,332 @@
+---
+title: "Johns Hopkins Covid-19 Data Analysis"
+author: "Shyam Menon"
+date: "06/04/2021"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+The data was obtained from COVID-19 Data Repository by the Center for Systems Science and Engineering (CSSE) at Johns Hopkins University.
+
+Covid-19 changed the world as we know it. Within on year all systems around the world were affected and changed. There are many lessons to learn from this pandemic and the data is our way of figuring out what, where, and how everything happened. With this data we want to see the trends of disease throughout the United States. Which areas were affected more than others? Were there big differences or changes over time? Etc. 
+
+```{r set up, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(lubridate)
+library(incidence)
+library(ggplot2)
+
+```
+
+
+## Dataset Maniuplation
+
+### Importing the Data: CCSE Covid-19 Time Series Data
+
+The data is from Johns Hopkins Center for Systems Science and Engineering. The data sets that are used are the confirmed global cases, deaths for global cases, confirmed US cases, and deaths for US cases.
+
+```{r get_covid_data, warning=FALSE, message=FALSE}
+
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_global.csv",
+                "time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_deaths_US.csv")
+
+urls <- str_c(url_in, file_names)
+
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+US_cases <- read_csv(urls[3])
+US_deaths <- read_csv(urls[4])
+
+```
+
+### Summary of Field Descriptions
+
+* Province_State - The name of the State within the USA.
+* Country_Region - The name of the Country (US).
+* Last_Update - The most recent date the file was pushed.
+* Lat - Latitude.
+* Long_ - Longitude.
+* Confirmed - Aggregated case count for the state.
+* Deaths - Aggregated death toll for the state.
+* Recovered - Aggregated Recovered case count for the state.
+* Active - Aggregated confirmed cases that have not been resolved (Active cases = total * cases - total recovered - total deaths).
+* FIPS - Federal Information Processing Standards code that uniquely identifies counties within the USA.
+* Incident_Rate - cases per 100,000 persons.
+* Total_Test_Results - Total number of people who have been tested.
+* People_Hospitalized - Total number of people hospitalized. (Nullified on Aug 31, see Issue #3083)
+* Case_Fatality_Ratio - Number recorded deaths * 100/ Number confirmed cases.
+* UID - Unique Identifier for each row entry.
+* ISO3 - Officialy assigned country code identifiers.
+* Testing_Rate - Total test results per 100,000 persons. The "total test results" are equal to "Total test results (Positive + Negative)" from COVID Tracking Project.
+* Hospitalization_Rate - US Hospitalization Rate (%): = Total number hospitalized / Number cases. The "Total number hospitalized" is the "Hospitalized – Cumulative" count from COVID Tracking Project. The "hospitalization rate" and "Total number hospitalized" is only presented for those states which provide cumulative hospital data.
+
+
+
+### Cleaning and Transforming the Covid-19 Data
+
+Getting rid of unneeded columns such as Lat/Long. Then changing the date from string to a date format. After cleaning the individual data sets, they are aggregated into a complete set for both global and US covid-19 data.
+
+
+```{r clean_covid_data, warning=FALSE, message=FALSE}
+global_cases <- global_cases %>%
+    pivot_longer(cols = -c('Province/State',
+                           'Country/Region', Lat, Long),
+                 names_to = "date",
+                 values_to = "cases") %>%
+    select(-c(Lat, Long))
+
+
+global_deaths <- global_deaths %>%
+    pivot_longer(cols = -c('Province/State',
+                           'Country/Region', Lat, Long),
+                 names_to = "date",
+                 values_to = "deaths") %>%
+    select(-c(Lat, Long))
+
+
+global <- global_cases %>% 
+    full_join(global_deaths) %>% 
+    rename(Country_Region = 'Country/Region',
+           Province_State = 'Province/State') %>% 
+    mutate(date = mdy(date))
+
+global <- global %>% filter(cases > 0)
+
+
+US_cases <- US_cases %>% 
+    pivot_longer(cols = -(UID:Combined_Key),
+                 names_to = "date",
+                 values_to = "cases") %>% 
+    select(Admin2:cases) %>% 
+    mutate(date = mdy(date)) %>% 
+    select(-c(Lat, Long_))
+
+US_deaths <- US_deaths %>% 
+    pivot_longer(cols = -(UID:Population),
+                 names_to = "date",
+                 values_to = "deaths") %>% 
+    select(Admin2:deaths) %>% 
+    mutate(date = mdy(date)) %>% 
+    select(-c(Lat, Long_))
+
+US <- US_cases %>% 
+    full_join(US_deaths)
+
+global <- global %>% 
+    unite("Combined_Key",
+          c(Province_State, Country_Region),
+          sep = ", ",
+          na.rm = TRUE,
+          remove = FALSE)
+
+uid_loopup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+uid <- read_csv(uid_loopup_url) %>% 
+    select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+
+global <- global %>% 
+    left_join(uid, by = c("Province_State", "Country_Region")) %>% 
+    select(-c(UID, FIPS)) %>% 
+    select(Province_State, Country_Region, date,
+           cases, deaths, Population,
+           Combined_Key)
+
+```
+
+
+## Data Analysis
+
+### Summarizing the Data
+
+Here we summarize the data for the US at both the state levels and the overall USA nationwide level.
+
+```{r summary_covid_data, warning=FALSE, message=FALSE}
+
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>% 
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>% 
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>% 
+  select(Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>% 
+  ungroup()
+
+```
+
+
+### Visualizing the Data - United States Nationwide Totals
+
+With this visualization we can see the total number of US covid-19 cases and deaths over time. As you can see from the graph, there is rapid spread of cases and deaths across the US.
+
+```{r US_totals_covid_data, warning=FALSE, message=FALSE}
+
+US_totals %>% 
+  filter(cases > 0) %>% 
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Total Covid-19 Cases and Deaths in US", y = "Number of Cases",
+       x = "Date")
+
+```
+
+
+### Visualizing the Data - Statewide Totals (Virginia)
+
+With this visualization we can see the total number of statewide covid-19 cases and deaths over time. As you can see from the graph, there is rapid spread of cases and deaths across the state.
+
+```{r NewYork_totals_covid_data, warning=FALSE, message=FALSE}
+
+state <- "Virginia"
+US_by_state %>% 
+  filter(Province_State == state) %>%
+  filter(cases > 0) %>% 
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID-19 in ", state), y = "Number of Cases",
+       x = "Date")
+
+```
+
+
+### Further Analysis - Gathering new cases
+Another question of interest is trying to find the number of new cases that are occurring. Here we are gathering the number of new cases for both state and US.
+
+```{r further_analysis_covid_data, warning=FALSE, message=FALSE}
+
+US_by_state <- US_by_state %>% 
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+US_totals <- US_totals %>% 
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+```
+
+
+### Visualizing the New Cases in the US
+
+Here we can see the number of new covid-19 cases in the United States.
+
+```{r graphing_new_cases_covid_data, warning=FALSE, message=FALSE}
+
+US_totals %>% 
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "New Covid-19 Cases and Deaths in US", y = "Number of Cases",
+       x = "Date")
+
+```
+
+### Visualizing the New Cases in Virginia
+
+Here we can see the number of new covid-19 cases in the state of Virginia.
+
+```{r graphing_new_cases_Virginia_covid_data, warning=FALSE, message=FALSE}
+
+US_by_state %>% 
+  filter(Province_State == state) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("New COVID-19 Cases in ", state), y = "Number of Cases",
+       x = "Date")
+
+```
+
+### Further Analysis - Calculating deaths and cases per thousand
+Another question of interest is trying to find the number of deaths and cases that are occurring per thousand and see which states had the highest and lowest of the range.
+
+```{r calc_deaths_cases_per_thou_covid_data, warning=FALSE, message=FALSE}
+
+US_state_totals <- US_by_state %>% 
+  group_by(Province_State) %>% 
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population),
+            cases_per_thou = 1000* cases / population,
+            deaths_per_thou = 1000* deaths / population) %>% 
+  filter(cases > 0, population > 0)
+
+
+US_state_totals %>% 
+  slice_min(deaths_per_thou, n = 10) %>% 
+  select(deaths_per_thou, cases_per_thou, everything())
+
+US_state_totals %>% 
+  slice_max(deaths_per_thou, n = 10) %>% 
+  select(deaths_per_thou, cases_per_thou, everything())
+
+```
+
+
+## Modeling the data
+
+Linear model, deaths per thousand as a function of cases per thousand. The model shows that it does a good job at predicting at the lower end, while at the higher ends there might be other factors that also come into play.
+
+```{r modeling_covid_data, warning=FALSE, message=FALSE}
+
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+
+US_state_totals %>% mutate(pred = predict(mod))
+
+US_tot_w_pred <- US_state_totals %>%  mutate(pred = predict(mod))
+
+US_tot_w_pred %>%  ggplot() +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") +
+  geom_point(aes(x = cases_per_thou, y = pred), color = "red") +
+  labs(title = str_c("Linear Model Prediction of Covid-19 in the US"), 
+       y = "Deaths per thousand", x = "Cases per thousand")
+
+```
+
+The model is shown here by the red data points, and the covid data set is represented in blue.
+
+## Conclusion
+
+The Johns Hopkins Covid-19 data set was very interesting to analyze. The distribution of covid throughout the United States vary greatly from state to state. Nonetheless, the data shows the spread of covid-19 has been rapid from the onset of the very first cases to present day time. This is critical to understand in order to prepare ourselves for future diseases and/or other public health crises.The data collected provides valuable insights that everyone should learn from. 
+
+While the data collected was vast and plentiful, there is still many variables that come into play. The model that was assessed predicts a linear fashion of distribution, which was seen for the lower stages of cases; however, there was an increase in variation as the cases per thousand increased. This indicates that there are multiple variables that affect the death rates as the cases increases over time. 
+
+It should be mentioned that bias could also play a major role in data collection and reporting. In terms of data collection, people may be reluctant to report their covid symptoms or there may be some patients that had covid but was asymptomatic. Therefore, the data collected must always be assessed for bias. Another form of bias is selection bias when analyzing the data. All groups must be considered and randomized testing should be implemented in order to reduce bias. Also, one must keep in mind that there are can be racial and ethnic bias in reporting and collecting of data as well. 
+
+Covid-19 changed the world as we know it. Within one year all systems around the world were affected and changed. There are many lessons to learn from this pandemic and the data is our way of figuring out what, where, and how everything happened. There are many variables to consider and one should always have a cyclical process of data science analysis. It is a never ending process of learning.
